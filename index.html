@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>The Killer in the Room</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:#000;font-family:Georgia,'Times New Roman',serif;color:#e8dcc4;touch-action:none;user-select:none;-webkit-user-select:none}
+canvas{display:block}
+#timer{position:fixed;top:10px;left:50%;transform:translateX(-50%);pointer-events:none;z-index:2}
+#t{display:block;font-size:68px;font-weight:bold;text-shadow:0 0 18px #000,0 0 6px #000;font-variant-numeric:tabular-nums}
+#t.danger{color:#ff3030;animation:pulse .5s ease-in-out infinite alternate}
+@keyframes pulse{from{transform:scale(1)}to{transform:scale(1.2);text-shadow:0 0 30px #f00}}
+#notebook{position:fixed;left:12px;top:12px;width:270px;max-height:calc(100% - 24px);overflow:auto;background:rgba(18,12,8,.82);border:1px solid #5a4630;border-radius:6px;padding:12px 14px;box-shadow:0 4px 24px rgba(0,0,0,.6);z-index:2}
+#notebook h2{font-size:15px;color:#c9a86a;border-bottom:1px solid #5a4630;padding-bottom:6px;margin-bottom:8px;letter-spacing:2px;text-transform:uppercase}
+#notes li{list-style:none;font-size:14px;line-height:1.4;margin-bottom:6px}
+#notes b{color:#e0b86a}
+#notes .empty{opacity:.55;font-style:italic}
+.tag{position:fixed;left:0;top:0;font-size:13px;padding:2px 9px;background:rgba(10,6,4,.78);border:1px solid #6b5334;border-radius:10px;white-space:nowrap;pointer-events:none;z-index:1}
+.tag.done{border-color:#7fbf6a}
+.tag.done::after{content:' \2713';color:#8fdc75;font-weight:bold}
+#speech{position:fixed;left:50%;bottom:86px;transform:translateX(-50%);width:min(560px,92vw);background:rgba(15,10,6,.9);border:1px solid #8a6a3e;border-radius:8px;padding:14px 18px;font-size:21px;text-align:center;z-index:2}
+#who{display:block;font-size:13px;color:#c9a86a;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px}
+#actions{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:12px;z-index:2;white-space:nowrap}
+button{font-family:inherit;font-size:17px;padding:10px 20px;border-radius:6px;border:1px solid #8a6a3e;background:#2a1c10;color:#f0e2c6;cursor:pointer}
+button:hover{background:#3a2716}
+button.accuse{background:#6e1414;border-color:#c04040}
+button.accuse:hover{background:#8a1a1a}
+.overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.8);z-index:10}
+.card{max-width:min(460px,90vw);text-align:center;padding:28px;background:#140d08;border:1px solid #6b5334;border-radius:10px;box-shadow:0 0 60px rgba(0,0,0,.9)}
+.card h1{font-size:34px;color:#d8b46e;margin-bottom:14px}
+.card p{font-size:16px;line-height:1.55;margin-bottom:18px}
+.hidden{display:none!important}
+@media (max-width:700px){
+  #timer{left:auto;right:12px;transform:none;top:6px}
+  #t{font-size:46px}
+  #notebook{width:58vw;max-height:30vh;padding:8px 10px;left:8px;top:8px}
+  #notebook h2{font-size:12px;margin-bottom:4px;padding-bottom:4px}
+  #notes li{font-size:12px;margin-bottom:3px}
+  #speech{font-size:17px;bottom:74px;padding:10px 12px}
+  button{font-size:15px;padding:9px 14px}
+  .card h1{font-size:26px}
+}
+</style>
+</head>
+<body>
+<div id="timer"><span id="t">60</span></div>
+<div id="notebook"><h2>Notebook</h2><ul id="notes"></ul></div>
+<div id="tags"></div>
+<div id="speech" class="hidden"><span id="who"></span><span id="said"></span></div>
+<div id="actions" class="hidden"><button id="back">Back</button><button id="accuse" class="accuse">Accuse</button></div>
+<div id="intro" class="overlay"><div class="card"><h1>The Killer in the Room</h1>
+<p>Someone has poisoned the wine. You have <b>60 seconds</b> to find the killer among five suspects.</p>
+<p>Two of them are lying, and the killer is one of the liars. Honest suspects always tell the truth; liars never do. Questioning a suspect costs <b>8 seconds</b>.</p>
+<button id="start">Begin</button></div></div>
+<div id="end" class="overlay hidden"><div class="card"><h1 id="endTitle"></h1><p id="endText"></p><button id="again">Play again</button></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// <gen>
+const NAMES=['Colonel Hale','Lady Violet','Dr. Thorne','Rosa Vance','Jonah Pike'];
+function stmtTrue(s,liars,killer){return s.type===0?!liars[s.t]:s.type===1?liars[s.t]:s.type===2?s.t!==killer:s.t===killer;}
+function consistentWorlds(stmts){
+  const w=[];
+  for(let a=0;a<5;a++)for(let b=a+1;b<5;b++){
+    const L=[0,1,2,3,4].map(i=>i===a||i===b);
+    for(const k of [a,b])if(stmts.every((s,i)=>stmtTrue(s,L,k)===!L[i]))w.push({a,b,k});
+  }
+  return w;
+}
+function generateCase(){
+  const r=n=>Math.floor(Math.random()*n);
+  for(;;){
+    const a=r(5);let b;do b=r(5);while(b===a);
+    const liars=[0,1,2,3,4].map(i=>i===a||i===b),killer=Math.random()<.5?a:b,stmts=[];
+    for(let i=0;i<5;i++){
+      let s;
+      do{let t;do t=r(5);while(t===i);s={type:r(4),t};}while(stmtTrue(s,liars,killer)===liars[i]);
+      stmts.push(s);
+    }
+    if(new Set(consistentWorlds(stmts).map(w=>w.k)).size===1)return{liars,killer,stmts};
+  }
+}
+function stmtText(s){const n=NAMES[s.t];return[n+' is telling the truth.',n+' is lying.',n+" didn't do it.",'It was '+n+'.'][s.type];}
+// </gen>
+
+const $=id=>document.getElementById(id);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x040302);
+scene.fog=new THREE.Fog(0x040302,14,30);
+const camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.05,60);
+
+const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.8},o));
+function mesh(geo,mat,x=0,y=0,z=0,parent=scene){const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);parent.add(m);return m;}
+function tex(w,h,draw,rx=1,ry=1){const c=document.createElement('canvas');c.width=w;c.height=h;draw(c.getContext('2d'),w,h);const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(rx,ry);return t;}
+
+// ---------- Room ----------
+const floorTex=tex(512,512,(g,w)=>{for(let r=0;r<8;r++){let x=-Math.random()*200;while(x<w){const len=150+Math.random()*200,v=.7+Math.random()*.5;g.fillStyle=`rgb(${90*v|0},${52*v|0},${28*v|0})`;g.fillRect(x,r*64,len,64);g.strokeStyle='rgba(0,0,0,.18)';for(let k=0;k<6;k++){const y=r*64+Math.random()*64;g.beginPath();g.moveTo(x,y);g.bezierCurveTo(x+len/3,y+Math.random()*8-4,x+2*len/3,y+Math.random()*8-4,x+len,y);g.stroke();}g.fillStyle='#1a0e06';g.fillRect(x,r*64,3,64);x+=len;}g.fillStyle='#1a0e06';g.fillRect(0,r*64,w,3);}},4,4);
+const wallTex=tex(128,256,(g,w,h)=>{g.fillStyle='#3a1414';g.fillRect(0,0,w,h);g.fillStyle='#2a0c0c';g.fillRect(0,0,w/2,h);g.fillStyle='rgba(190,150,80,.25)';g.fillRect(w/2-2,0,2,h);g.fillRect(w-2,0,2,h);},10,1);
+const rugTex=tex(512,512,(g,w,h)=>{g.fillStyle='#4a0f12';g.fillRect(0,0,w,h);g.strokeStyle='#b08a3a';g.lineWidth=10;g.strokeRect(24,24,w-48,h-48);g.lineWidth=3;g.strokeRect(50,50,w-100,h-100);g.fillStyle='#2a1a3a';g.beginPath();g.moveTo(w/2,90);g.lineTo(w-90,h/2);g.lineTo(w/2,h-90);g.lineTo(90,h/2);g.fill();g.strokeStyle='#8a6a2e';g.stroke();g.fillStyle='#6a1a1a';g.beginPath();g.arc(w/2,h/2,60,0,7);g.fill();});
+const floor=mesh(new THREE.PlaneGeometry(20,20),M(0xffffff,{map:floorTex,roughness:.55}));floor.rotation.x=-Math.PI/2;
+const ceil=mesh(new THREE.PlaneGeometry(20,20),M(0x1a110b),0,5.5,0);ceil.rotation.x=Math.PI/2;
+const wallMat=M(0xffffff,{map:wallTex}),panelMat=M(0x2a170b,{roughness:.6});
+[[0,-10,0],[0,10,Math.PI],[-10,0,Math.PI/2],[10,0,-Math.PI/2]].forEach(([x,z,r])=>{
+  mesh(new THREE.PlaneGeometry(20,5.5),wallMat,x,2.75,z).rotation.y=r;
+  mesh(new THREE.BoxGeometry(20,1.1,.08),panelMat,x,.55,z).rotation.y=r;
+});
+const rug=mesh(new THREE.PlaneGeometry(7.5,6.5),M(0xffffff,{map:rugTex,roughness:1}),0,.01,0);rug.rotation.x=-Math.PI/2;
+
+// glow sprite + candles
+const glowTex=tex(64,64,(g)=>{const gr=g.createRadialGradient(32,32,0,32,32,32);gr.addColorStop(0,'rgba(255,255,255,1)');gr.addColorStop(.3,'rgba(255,255,255,.35)');gr.addColorStop(1,'rgba(255,255,255,0)');g.fillStyle=gr;g.fillRect(0,0,64,64);});
+const glow=(c,o=1)=>new THREE.SpriteMaterial({map:glowTex,color:c,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:o});
+const waxM=M(0xeee0c0,{roughness:.5}),flameM=new THREE.MeshBasicMaterial({color:0xffd070}),brass=M(0xb08a3a,{metalness:.8,roughness:.35}),candleGlow=glow(0xffa040,.8);
+const flames=[];
+function candle(x,y,z,parent=scene,h=.22){
+  mesh(new THREE.CylinderGeometry(.03,.03,h,10),waxM,x,y+h/2,z,parent);
+  const f=mesh(new THREE.SphereGeometry(.018,8,8),flameM,x,y+h+.03,z,parent);f.scale.y=1.8;
+  const s=new THREE.Sprite(candleGlow);s.scale.setScalar(.3);s.position.set(x,y+h+.035,z);parent.add(s);
+  flames.push({f,s,ph:Math.random()*9});
+}
+
+// table + poison glass
+const darkWood=M(0x2e1a0c,{roughness:.45});
+mesh(new THREE.CylinderGeometry(1.1,1.1,.07,40),darkWood,0,.76,0);
+mesh(new THREE.CylinderGeometry(.1,.14,.72,12),darkWood,0,.38,0);
+mesh(new THREE.CylinderGeometry(.5,.55,.06,24),darkWood,0,.03,0);
+const glassPts=[[0,0],[.07,0],[.07,.01],[.012,.02],[.01,.11],[.04,.13],[.07,.17],[.075,.25]].map(p=>new THREE.Vector2(p[0],p[1]));
+mesh(new THREE.LatheGeometry(glassPts,24),new THREE.MeshStandardMaterial({color:0xddeeff,transparent:true,opacity:.3,roughness:.05,side:THREE.DoubleSide}),0,.795,0);
+const poisonM=new THREE.MeshStandardMaterial({color:0x40ff60,emissive:0x30ff40,emissiveIntensity:1,transparent:true,opacity:.9});
+mesh(new THREE.CylinderGeometry(.068,.042,.07,20),poisonM,0,.795+.165,0);
+const poisonGlow=new THREE.Sprite(glow(0x40ff50,.9));poisonGlow.scale.setScalar(.7);poisonGlow.position.set(0,.97,0);scene.add(poisonGlow);
+const poisonLight=new THREE.PointLight(0x40ff50,1,4);poisonLight.position.set(0,1.1,0);scene.add(poisonLight);
+for(let i=0;i<3;i++){const a=i*2.094+.5;mesh(new THREE.CylinderGeometry(.06,.07,.03,12),brass,Math.cos(a)*.6,.81,Math.sin(a)*.6);candle(Math.cos(a)*.6,.825,Math.sin(a)*.6);}
+
+// chandelier
+const chand=new THREE.Group();chand.position.set(0,4.2,0);scene.add(chand);
+mesh(new THREE.CylinderGeometry(.015,.015,1.3,6),brass,0,.65,0,chand);
+mesh(new THREE.SphereGeometry(.14,16,12),brass,0,0,0,chand);
+mesh(new THREE.TorusGeometry(.75,.025,8,40),brass,0,-.05,0,chand).rotation.x=Math.PI/2;
+for(let i=0;i<8;i++){const a=i*Math.PI/4;mesh(new THREE.CylinderGeometry(.05,.03,.06,10),brass,Math.cos(a)*.75,-.03,Math.sin(a)*.75,chand);candle(Math.cos(a)*.75,0,Math.sin(a)*.75,chand,.14);}
+const chandLight=new THREE.PointLight(0xffb060,1.6,16);chandLight.position.set(0,3.8,0);scene.add(chandLight);
+const amb=new THREE.AmbientLight(0x3a2a20,.5);scene.add(amb);
+scene.add(new THREE.HemisphereLight(0x2a2030,0x100804,.35));
+
+// fireplace
+const fp=new THREE.Group();fp.position.set(0,0,-9.65);scene.add(fp);
+const stone=M(0x5a5048,{roughness:.95});
+mesh(new THREE.BoxGeometry(.6,2.2,.7),stone,-1.4,1.1,0,fp);
+mesh(new THREE.BoxGeometry(.6,2.2,.7),stone,1.4,1.1,0,fp);
+mesh(new THREE.BoxGeometry(3.4,.6,.7),stone,0,1.9,0,fp);
+mesh(new THREE.BoxGeometry(3.8,.14,.9),darkWood,0,2.27,.05,fp);
+mesh(new THREE.BoxGeometry(2.2,1.6,.1),new THREE.MeshBasicMaterial({color:0x080404}),0,.8,-.28,fp);
+mesh(new THREE.BoxGeometry(3.8,.08,1.3),stone,0,.04,.35,fp);
+for(let i=-1;i<=1;i+=2)mesh(new THREE.CylinderGeometry(.08,.08,1,8),M(0x2a1608),i*.15,.18,0,fp).rotation.set(0,i*.5,Math.PI/2);
+const fireM=new THREE.MeshBasicMaterial({color:0xff7a20,transparent:true,opacity:.85,blending:THREE.AdditiveBlending,depthWrite:false});
+const fireCones=[];
+for(let i=0;i<7;i++){const c=mesh(new THREE.ConeGeometry(.12+Math.random()*.08,.5+Math.random()*.4,8),fireM,(i-3)*.14,.45,Math.random()*.1-.05,fp);fireCones.push({c,ph:Math.random()*9});}
+const fireGlow=new THREE.Sprite(glow(0xff6010,.9));fireGlow.scale.set(2.6,1.6,1);fireGlow.position.set(0,.6,.2);fp.add(fireGlow);
+const fireLight=new THREE.PointLight(0xff6a20,2,10);fireLight.position.set(0,.9,-8.8);scene.add(fireLight);
+mesh(new THREE.BoxGeometry(1.7,1.2,.06),brass,0,3.2,-.3,fp);
+mesh(new THREE.BoxGeometry(1.5,1,.07),M(0x2a3424),0,3.2,-.28,fp);
+candle(-1.5,2.34,.1,fp);candle(1.5,2.34,.1,fp);
+
+// interrogation area: chair + empty floor space
+const intr=new THREE.Group();intr.position.set(-3.6,0,-7.2);intr.rotation.y=.9;scene.add(intr);
+const chairWood=M(0x3a2010,{roughness:.6}),uphol=M(0x5a1a1a);
+mesh(new THREE.BoxGeometry(.55,.1,.55),uphol,0,.5,0,intr);
+[[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([a,b])=>mesh(new THREE.BoxGeometry(.05,.5,.05),chairWood,a*.24,.25,b*.24,intr));
+mesh(new THREE.BoxGeometry(.55,.75,.07),uphol,0,.92,-.26,intr);
+mesh(new THREE.CircleGeometry(1,32),M(0x1a2418,{roughness:1}),0,.012,1.6,intr).rotation.x=-Math.PI/2;
+
+// bookshelves
+function shelf(x,z,ry){
+  const g=new THREE.Group();g.position.set(x,0,z);g.rotation.y=ry;scene.add(g);
+  mesh(new THREE.BoxGeometry(2.4,3.4,.06),darkWood,0,1.7,-.2,g);
+  mesh(new THREE.BoxGeometry(.08,3.4,.45),darkWood,-1.2,1.7,0,g);
+  mesh(new THREE.BoxGeometry(.08,3.4,.45),darkWood,1.2,1.7,0,g);
+  for(let s=0;s<6;s++){
+    const y=.1+s*.62;mesh(new THREE.BoxGeometry(2.4,.05,.45),darkWood,0,y,0,g);
+    if(s===5)break;
+    let bx=-1.12;
+    while(bx<1.05){const w=.05+Math.random()*.06,h=.35+Math.random()*.18;if(Math.random()<.9)mesh(new THREE.BoxGeometry(w,h,.3),M(new THREE.Color().setHSL(Math.random(),.45,.12+Math.random()*.15)),bx+w/2,y+.025+h/2,.02,g);bx+=w+.005;}
+  }
+}
+shelf(-9.75,-4,Math.PI/2);shelf(-9.75,-1.2,Math.PI/2);shelf(9.75,-4,-Math.PI/2);shelf(9.75,-1.2,-Math.PI/2);
+
+// spotlight + beam
+const spot=new THREE.SpotLight(0xfff0d8,0,12,.32,.5,1);scene.add(spot,spot.target);
+const beamGeo=new THREE.ConeGeometry(1,1,24,1,true);beamGeo.translate(0,-.5,0);
+const beam=mesh(beamGeo,new THREE.MeshBasicMaterial({color:0xfff0d0,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));
+
+// ---------- People ----------
+const CAST=[
+  {skin:0xe0b494,hair:0x3a2a1a,style:'bald',acc:'hat',accC:0x1e1a16,outfit:0x3b4a2a,pants:0x2a2a22,h:1.04},
+  {skin:0xf1d0bb,hair:0xc9a55a,style:'bun',acc:'necklace',accC:0xe0c060,outfit:0x5a2a6e,pants:0x1e1418,skirt:1,h:.96},
+  {skin:0xd9a77c,hair:0x9a9a9a,style:'spiky',acc:'glasses',accC:0x151515,outfit:0x5a3a22,pants:0x2e2218,h:1},
+  {skin:0xb57a52,hair:0x140c08,style:'long',acc:'scarf',accC:0xd8b040,outfit:0x8a1822,pants:0x1a1010,skirt:1,h:.97},
+  {skin:0x6b4028,hair:0x1a100a,style:'curly',acc:'tie',accC:0x9a1a1a,outfit:0x1f2a4a,pants:0x1a1e2e,h:1.02}
+];
+const POS=[[-2.6,.9],[-1.7,-1.9],[.3,-2.7],[2.1,-1.8],[2.6,1.1]];
+function makePerson(c,i){
+  const root=new THREE.Group(),body=new THREE.Group();root.add(body);root.userData.idx=i;
+  const skin=M(c.skin,{roughness:.55}),cloth=M(c.outfit,{roughness:.85}),pants=M(c.pants),shoe=M(0x120a06,{roughness:.4}),hairM=M(c.hair,{roughness:.9}),accM=M(c.accC,{roughness:.5,metalness:c.acc==='necklace'?.8:0}),dark=new THREE.MeshBasicMaterial({color:0x100808});
+  const legs=[];
+  for(const s of[-1,1]){const hip=new THREE.Group();hip.position.set(s*.1,.95,0);body.add(hip);
+    mesh(new THREE.CylinderGeometry(.085,.068,.88,10),pants,0,-.44,0,hip);
+    mesh(new THREE.BoxGeometry(.12,.08,.27),shoe,0,-.91,.05,hip);legs.push(hip);}
+  mesh(new THREE.BoxGeometry(.34,.2,.22),c.skirt?cloth:pants,0,.98,0,body);
+  if(c.skirt)mesh(new THREE.CylinderGeometry(.19,.33,.55,18,1,true),cloth,0,.72,0,body).material.side=THREE.DoubleSide;
+  const torso=new THREE.Group();torso.position.y=1.02;body.add(torso);
+  const chest=mesh(new THREE.CylinderGeometry(.2,.16,.52,16),cloth,0,.26,0,torso);chest.scale.z=.62;
+  mesh(new THREE.CylinderGeometry(.075,.075,.46,12),cloth,0,.47,0,torso).rotation.z=Math.PI/2;
+  mesh(new THREE.CylinderGeometry(.05,.056,.14,10),skin,0,.58,0,torso);
+  const head=new THREE.Group();head.position.y=.62;head.rotation.order='YXZ';torso.add(head);
+  mesh(new THREE.SphereGeometry(.12,20,16),skin,0,.13,0,head).scale.set(.88,1.08,.95);
+  for(const s of[-1,1]){
+    mesh(new THREE.SphereGeometry(.022,10,8),M(0xf4f0e8,{roughness:.3}),s*.042,.15,.098,head).scale.z=.6;
+    mesh(new THREE.SphereGeometry(.011,8,6),dark,s*.042,.15,.111,head);
+    mesh(new THREE.BoxGeometry(.048,.011,.012),hairM,s*.043,.183,.106,head).rotation.z=-s*.12;
+    mesh(new THREE.SphereGeometry(.026,8,8),skin,s*.104,.13,0,head).scale.set(.45,1,.8);
+  }
+  mesh(new THREE.BoxGeometry(.024,.05,.035),skin,0,.12,.112,head).rotation.x=-.25;
+  const mouth=mesh(new THREE.BoxGeometry(.052,.011,.012),M(0x5a1a1a),0,.075,.1,head);
+  const cap=(th,rx=-.3)=>{const m=mesh(new THREE.SphereGeometry(.13,20,12,0,Math.PI*2,0,th),hairM,0,.135,-.005,head);m.scale.set(.9,1.08,.97);m.rotation.x=rx;return m;};
+  if(c.style==='spiky'){cap(1.3);for(let k=0;k<12;k++){const a=k*2.4,r=.06+(k%3)*.025,sp=mesh(new THREE.ConeGeometry(.028,.11,6),hairM,Math.cos(a)*r*.9,.25-r*.3,Math.sin(a)*r-.02,head);sp.rotation.set(Math.sin(a)*r*6,0,-Math.cos(a)*r*6);}}
+  if(c.style==='long'){cap(1.5);mesh(new THREE.BoxGeometry(.23,.34,.07),hairM,0,.02,-.085,head);for(const s of[-1,1])mesh(new THREE.BoxGeometry(.04,.26,.1),hairM,s*.1,.06,-.02,head);}
+  if(c.style==='bun'){cap(1.45);mesh(new THREE.SphereGeometry(.058,12,10),hairM,0,.24,-.1,head);}
+  if(c.style==='curly'){for(let k=0;k<26;k++){const a=k*2.399,y=1-(k/26)*.95,r=Math.sqrt(1-y*y);mesh(new THREE.SphereGeometry(.042,8,6),hairM,Math.cos(a)*r*.12,.14+y*.13,Math.sin(a)*r*.12-(Math.sin(a)>0?.035:0),head);}}
+  if(c.style==='bald')for(const s of[-1,1])mesh(new THREE.BoxGeometry(.02,.05,.1),hairM,s*.103,.13,-.03,head);
+  if(c.acc==='glasses'){for(const s of[-1,1])mesh(new THREE.TorusGeometry(.028,.005,6,16),accM,s*.043,.15,.12,head);mesh(new THREE.BoxGeometry(.03,.005,.005),accM,0,.155,.122,head);}
+  if(c.acc==='hat'){mesh(new THREE.CylinderGeometry(.22,.22,.015,24),accM,0,.245,0,head);mesh(new THREE.CylinderGeometry(.115,.13,.15,20),accM,0,.32,0,head);mesh(new THREE.CylinderGeometry(.132,.132,.03,20),M(0x6a1a1a),0,.265,0,head);}
+  if(c.acc==='scarf'){mesh(new THREE.TorusGeometry(.075,.035,8,18),accM,0,.57,0,torso).rotation.x=Math.PI/2;mesh(new THREE.BoxGeometry(.08,.3,.03),accM,.06,.4,.14,torso).rotation.z=.1;}
+  if(c.acc==='tie'){mesh(new THREE.BoxGeometry(.13,.34,.01),M(0xe8e4dc),0,.33,.121,torso);mesh(new THREE.BoxGeometry(.05,.3,.012),accM,0,.3,.128,torso).rotation.x=-.08;mesh(new THREE.BoxGeometry(.06,.04,.02),accM,0,.47,.125,torso);}
+  if(c.acc==='necklace'){mesh(new THREE.TorusGeometry(.078,.007,6,24),accM,0,.53,.02,torso).rotation.x=Math.PI/2-.35;mesh(new THREE.SphereGeometry(.018,10,8),M(0x2a8a4a,{metalness:.5,roughness:.2}),0,.49,.1,torso);}
+  const arms=[];
+  for(const s of[-1,1]){
+    const sh=new THREE.Group();sh.position.set(s*.25,.47,0);torso.add(sh);
+    mesh(new THREE.SphereGeometry(.07,10,8),cloth,0,0,0,sh);
+    mesh(new THREE.CylinderGeometry(.056,.048,.3,10),cloth,0,-.15,0,sh);
+    const el=new THREE.Group();el.position.y=-.3;sh.add(el);
+    mesh(new THREE.CylinderGeometry(.047,.04,.27,10),cloth,0,-.135,0,el);
+    const hand=new THREE.Group();hand.position.y=-.28;el.add(hand);
+    mesh(new THREE.SphereGeometry(.045,10,8),skin,0,-.03,0,hand).scale.set(.8,1.25,.55);
+    mesh(new THREE.SphereGeometry(.018,8,6),skin,-s*.03,-.01,.02,hand).scale.y=1.6;
+    arms.push({sh,el,hand});
+  }
+  const [x,z]=POS[i];root.position.set(x,0,z);root.rotation.y=Math.atan2(-x,5-z);root.scale.setScalar(c.h);
+  scene.add(root);
+  return{root,body,torso,chest,head,mouth,legs,arms,ph:Math.random()*9,off:Math.random()*6,nerv:0,talk:0,hy:0,hx:0};
+}
+const people=CAST.map(makePerson),roots=people.map(p=>p.root);
+const tags=NAMES.map(n=>{const d=document.createElement('div');d.className='tag';d.textContent=n;$('tags').appendChild(d);return d;});
+
+// ---------- Game ----------
+let G=null,state='intro',timeLeft=60,sel=-1,questioned=[],shake=0,focus=0,flick=1,flickT=0;
+const wide={pos:new THREE.Vector3(),look:new THREE.Vector3(0,1.1,-.6)},camPos=new THREE.Vector3(),camLook=new THREE.Vector3();
+function layout(){
+  const a=innerWidth/innerHeight;camera.aspect=a;camera.fov=a<1?68:50;camera.updateProjectionMatrix();
+  wide.pos.set(0,a<1?4.6:3.6,a<1?10:7.4);renderer.setSize(innerWidth,innerHeight);
+}
+layout();camPos.copy(wide.pos);camLook.copy(wide.look);
+addEventListener('resize',layout);
+
+function renderNotes(){
+  const heard=questioned.map((q,i)=>q?`<li><b>${NAMES[i]}:</b> “${stmtText(G.stmts[i])}”</li>`:'').join('');
+  $('notes').innerHTML=heard||'<li class="empty">No statements yet. Click a suspect.</li>';
+  tags.forEach((t,i)=>t.classList.toggle('done',!!questioned[i]));
+}
+function newCase(){
+  G=generateCase();timeLeft=60;sel=-1;questioned=[0,0,0,0,0].map(()=>false);state='play';
+  ['intro','end','speech','actions'].forEach(id=>$(id).classList.add('hidden'));renderNotes();
+}
+function question(i){
+  if(!questioned[i]){questioned[i]=true;timeLeft-=8;shake=.45;renderNotes();if(timeLeft<=0){timeLeft=0;return end(false,'Time ran out while you were questioning.');}}
+  sel=i;$('who').textContent=NAMES[i];$('said').textContent='“'+stmtText(G.stmts[i])+'”';$('accuse').textContent='Accuse '+NAMES[i];
+  $('speech').classList.remove('hidden');$('actions').classList.remove('hidden');
+  const p=people[i],f=new THREE.Vector3(Math.sin(p.root.rotation.y),0,Math.cos(p.root.rotation.y));
+  spot.position.copy(p.root.position).addScaledVector(f,.9).setY(5.3);spot.target.position.copy(p.root.position).setY(1);
+  const d=spot.target.position.clone().sub(spot.position),L=d.length()+1,r=L*Math.tan(spot.angle);
+  beam.position.copy(spot.position);beam.scale.set(r,L,r);beam.quaternion.setFromUnitVectors(new THREE.Vector3(0,-1,0),d.normalize());
+}
+function back(){sel=-1;$('speech').classList.add('hidden');$('actions').classList.add('hidden');}
+function end(win,why){
+  state='over';back();
+  $('endTitle').textContent=win?'Case Closed':'The Wine Is Poisoned';
+  const liars=[0,1,2,3,4].filter(i=>G.liars[i]).map(i=>NAMES[i]);
+  $('endText').innerHTML=win?`You caught <b>${NAMES[G.killer]}</b> with ${Math.ceil(timeLeft)} seconds to spare. The liars were ${liars[0]} and ${liars[1]}.`
+    :`${why}<br>The killer was <b>${NAMES[G.killer]}</b>.<br>The liars were <b>${liars[0]}</b> and <b>${liars[1]}</b>.`;
+  $('end').classList.remove('hidden');
+}
+$('start').onclick=$('again').onclick=newCase;
+$('back').onclick=back;
+$('accuse').onclick=()=>{if(state!=='play'||sel<0)return;sel===G.killer?end(true):end(false,`${NAMES[sel]} was innocent.`);};
+
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2(),mouseWorld=new THREE.Vector3(),plane=new THREE.Plane();let hasMouse=false;
+function pick(e){
+  ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);ray.setFromCamera(ndc,camera);
+  const h=ray.intersectObjects(roots,true)[0];if(!h)return -1;let o=h.object;while(o.userData.idx===undefined)o=o.parent;return o.userData.idx;
+}
+renderer.domElement.addEventListener('pointermove',e=>{
+  ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);ray.setFromCamera(ndc,camera);
+  plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(),new THREE.Vector3(0,1.5,0));
+  hasMouse=!!ray.ray.intersectPlane(plane,mouseWorld);
+  renderer.domElement.style.cursor=state==='play'&&pick(e)>=0?'pointer':'default';
+});
+renderer.domElement.addEventListener('click',e=>{if(state!=='play')return;const i=pick(e);if(i>=0)question(i);else if(sel>=0)back();});
+
+// ---------- Loop ----------
+const clock=new THREE.Clock(),tmp=new THREE.Vector3(),tgt=new THREE.Vector3();
+const lerp=(a,b,t)=>a+(b-a)*t,wrap=a=>Math.atan2(Math.sin(a),Math.cos(a)),clamp=(v,a)=>Math.max(-a,Math.min(a,v));
+function animPerson(p,i,dt,now){
+  const nervous=state==='play'&&timeLeft<15,k1=Math.min(1,dt*3);
+  p.ph+=dt*(nervous?2.6:1);p.nerv=lerp(p.nerv,nervous?1:0,k1);p.talk=lerp(p.talk,sel===i?1:0,Math.min(1,dt*4));
+  const t=p.ph,b=Math.sin(t*1.7+p.off),sw=Math.sin(t*.6+p.off)*(1+p.nerv);
+  p.chest.scale.set(1+b*.015,1+b*.01,.62*(1+b*.035));p.torso.position.y=1.02+b*.004;
+  p.body.position.x=sw*.025;p.body.rotation.z=sw*.02;p.torso.rotation.z=-sw*.03;p.legs.forEach(l=>l.rotation.z=-sw*.02);
+  p.arms.forEach((a,k)=>{
+    const s=k?1:-1,mix=(x,y,z)=>lerp(lerp(x,y,p.nerv),z,p.talk);
+    a.sh.rotation.x=mix(Math.sin(t*1.1+k)*.05,-.45+Math.sin(t*5+k*2)*.12,k?-.6-.35*Math.sin(now*3.1):-.3-.2*Math.sin(now*2.3+1));
+    a.sh.rotation.z=mix(s*(.1+b*.01),s*.05,s*.2);
+    a.el.rotation.x=mix(-.12,-1.1+Math.sin(t*6+k)*.15,k?-1-.35*Math.sin(now*4.3):-.7-.2*Math.sin(now*3.3));
+    a.hand.rotation.y=p.talk*Math.sin(now*5+k)*.7;a.hand.rotation.x=p.talk*Math.sin(now*3.7+k)*.3;
+  });
+  p.mouth.scale.y=1+p.talk*3.2*Math.abs(Math.sin(now*13))*(.6+.4*Math.sin(now*3.7));
+  if(sel===i)tgt.copy(camera.position);else if(sel>=0)tgt.copy(people[sel].root.position).setY(1.65);else if(hasMouse)tgt.copy(mouseWorld);else tgt.copy(camera.position);
+  tmp.copy(p.root.position).setY(1.68*p.root.scale.y);
+  const dx=tgt.x-tmp.x,dz=tgt.z-tmp.z,dy=tgt.y-tmp.y;
+  const yaw=clamp(wrap(Math.atan2(dx,dz)-p.root.rotation.y),.9)+Math.sin(t*7)*.04*p.nerv,pitch=clamp(-Math.atan2(dy,Math.hypot(dx,dz)),.4)+p.talk*Math.sin(now*4)*.05;
+  p.head.rotation.y=lerp(p.head.rotation.y,yaw,Math.min(1,dt*5));p.head.rotation.x=lerp(p.head.rotation.x,pitch,Math.min(1,dt*5));
+}
+function loop(){
+  requestAnimationFrame(loop);
+  const dt=Math.min(clock.getDelta(),.05),now=clock.elapsedTime;
+  if(state==='play'){timeLeft-=dt;if(timeLeft<=0){timeLeft=0;end(false,'Time ran out.');}}
+  $('t').textContent=Math.ceil(timeLeft);$('t').classList.toggle('danger',state==='play'&&timeLeft<10);
+  const fr=timeLeft/60;
+  if((flickT-=dt)<=0){flickT=.04+Math.random()*.08;flick=1-Math.random()*(.04+.45*Math.pow(1-fr,1.5));}
+  chandLight.intensity=1.6*(.3+.7*fr)*flick;
+  flames.forEach(f=>{const s=(.85+.25*Math.sin(now*9+f.ph)+.1*Math.random())*(f.s.parent===chand?flick:1);f.f.scale.set(s,1.8*s,s);f.s.scale.setScalar(.3*s);});
+  fireCones.forEach(({c,ph})=>{c.scale.set(1,.8+.35*Math.sin(now*8+ph)+.15*Math.random(),1);});
+  fireLight.intensity=1.8+.4*Math.sin(now*11)+.3*Math.random();
+  poisonLight.intensity=.8+.3*Math.sin(now*3)+(1-fr)*.8;poisonGlow.material.opacity=.6+.25*Math.sin(now*3);
+  focus=lerp(focus,sel>=0?1:0,Math.min(1,dt*4));
+  spot.intensity=focus*2.6;beam.material.opacity=focus*.06;amb.intensity=lerp(.5,.22,focus);
+  people.forEach((p,i)=>animPerson(p,i,dt,now));
+  let cp=wide.pos,cl=wide.look;
+  if(sel>=0){const p=people[sel],ry=p.root.rotation.y,s=p.root.scale.y,h=tmp.copy(p.root.position).setY(1.62*s);
+    cl=h.clone().setY(h.y-.22);cp=h.clone().add(new THREE.Vector3(Math.sin(ry)*1.6+Math.cos(ry)*.2,.08,Math.cos(ry)*1.6-Math.sin(ry)*.2));}
+  const k=1-Math.exp(-dt*3.5);camPos.lerp(cp,k);camLook.lerp(cl,k);camera.position.copy(camPos);
+  if(shake>0){shake-=dt;camera.position.x+=(Math.random()-.5)*shake*.35;camera.position.y+=(Math.random()-.5)*shake*.35;}
+  camera.lookAt(camLook);
+  people.forEach((p,i)=>{
+    tmp.copy(p.root.position).setY(2.02*p.root.scale.y).project(camera);
+    const show=state!=='intro'&&focus<.3&&tmp.z<1;tags[i].style.display=show?'block':'none';
+    if(show)tags[i].style.transform=`translate(-50%,-100%) translate(${(tmp.x+1)/2*innerWidth}px,${(1-tmp.y)/2*innerHeight}px)`;
+  });
+  renderer.render(scene,camera);
+}
+loop();
+</script>
+</body>
+</html>
